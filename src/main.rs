@@ -1,7 +1,41 @@
 use humanize_bytes::humanize_bytes_binary;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead};
+
+// Define a tree structure using a BTreeMap
+#[derive(Debug)]
+struct TreeNode {
+    children: BTreeMap<String, TreeNode>,
+}
+
+impl TreeNode {
+    fn new() -> Self {
+        TreeNode {
+            children: BTreeMap::new(),
+        }
+    }
+
+    fn add_path(&mut self, components: &[String]) {
+        if let Some((first, rest)) = components.split_first() {
+            self.children
+                .entry(first.clone())
+                .or_insert_with(TreeNode::new)
+                .add_path(rest);
+        }
+    }
+
+    fn print(&self, prefix: &str, is_last: bool) {
+        let prefix_component = if is_last { "└── " } else { "├── " };
+        for (i, (name, child)) in self.children.iter().enumerate() {
+            let is_last = i == self.children.len() - 1;
+            println!("{}{}{}", prefix, prefix_component, name);
+            let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+            child.print(&new_prefix, is_last);
+        }
+    }
+}
 
 #[derive(Debug)]
 struct FileBlock {
@@ -50,7 +84,7 @@ fn main() -> io::Result<()> {
             }
         } else if let Some(ref mut block) = current_block {
             // Add file paths to the current block
-            block.paths.push(line.to_string());
+            block.paths.push(line.to_owned());
         }
     }
 
@@ -60,22 +94,24 @@ fn main() -> io::Result<()> {
     }
 
     // Sort the blocks by the number of bytes
-    blocks.sort_by(|a, b| a.bytes.cmp(&b.bytes));
+    blocks.sort_by(|a, b| (a.bytes * (a.paths.len() - 1)).cmp(&(b.bytes * (b.paths.len() - 1))));
 
     let mut sum: usize = 0;
-    let mut biggest_group: usize = 0;
+    let mut biggest_file_size: usize = 0;
+    let mut tree = TreeNode::new();
 
     // Print the collected and sorted blocks
     for block in &blocks {
-        if block.bytes < 1024 * 1024 {
+        if block.bytes < 10 * 1024 * 1024 {
             // ignore files smaller than 1 MiB
             continue;
         }
 
-        let group_size = block.bytes * (block.paths.len() - 1);
-        if group_size > biggest_group {
-            biggest_group = group_size;
+        if block.bytes > biggest_file_size {
+            biggest_file_size = block.bytes;
         }
+
+        let group_size = block.bytes * (block.paths.len() - 1);
         sum += group_size;
 
         println!(
@@ -84,21 +120,40 @@ fn main() -> io::Result<()> {
             humanize_bytes_binary!(group_size)
         );
         for path in &block.paths {
+            let path_components: Vec<String> = path.split('/').map(|s| s.to_string()).collect();
+            tree.add_path(&path_components);
+
             println!("{}", path);
         }
         println!(); // For visual separation between blocks
     }
 
-    println!("sum of duplicates: {}", humanize_bytes_binary!(sum));
+    // Print the tree structure
+    //tree.print("", true);
+
+    let num: usize = blocks.iter().map(|block| block.paths.len() - 1).sum();
+
     println!(
-        "smallest file: {}",
-        humanize_bytes_binary!(blocks.first().unwrap().bytes)
+        "Total number duplicates: {}, using {} of disk space",
+        num,
+        humanize_bytes_binary!(sum)
     );
+
     println!(
         "biggest file: {}",
-        humanize_bytes_binary!(blocks.last().unwrap().bytes)
+        humanize_bytes_binary!(biggest_file_size)
     );
-    println!("biggest group: {}", humanize_bytes_binary!(biggest_group));
+    println!(
+        "biggest group: {}",
+        humanize_bytes_binary!(
+            blocks.last().unwrap().bytes * (blocks.last().unwrap().paths.len() - 1)
+        )
+    );
 
+    if let Some(biggest) = blocks.last() {
+        for p in biggest.paths.iter() {
+            println!("{}", p)
+        }
+    }
     Ok(())
 }
